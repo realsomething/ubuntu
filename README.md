@@ -158,17 +158,13 @@ ROM会固化一些初始化的程序，如BIOS。实模式只有 1MB 内存寻�
 
 BIOS的界面会有一个启动盘，一般在第一个扇区，占512个字节，以0xAA55结束，启动盘是Grub2放置在这的
 
-###Grub2
-
-Grand Unified Bootloaer Version 2：
+Grub2：Grand Unified Bootloaer Version 2：
 
 ```
 grub2-mkconfig -o /boot/grub2/grub.cfg
 ```
 
-### MBR
-
-启动盘第一个扇区(512字节, 由 Grub2 写入 boot.img 镜像)，BIOS 完成任务后，会将 boot.img 从硬盘加载到内存中的 0x7c00 来运行
+MBR：启动盘第一个扇区(512字节, 由 Grub2 写入 boot.img 镜像)，BIOS 完成任务后，会将 boot.img 从硬盘加载到内存中的 0x7c00 来运行
 
 ### Bootloader
 
@@ -236,6 +232,121 @@ ramdisk：基于内存的文件系统。内存访问不需要驱动。这个时�
 - `kthreadd` 负责所有内核态线程的调度和管理
 
   
+
+### glibc 
+
+将系统调用封装成更友好的接口，用户进程调用 open 函数的流程：
+
+- glibc 的 syscal.list 列出 glibc 函数对应的系统调用
+
+  ```
+  # File name Caller  Syscall name    Args    	Strong name 	Weak names
+  open		-		open			Ci:siv	__libc_open __open 	open
+  ```
+
+- glibc 的脚本 make_syscall.sh 根据 syscal.list 生成对应的宏定义(函数映射到系统调用)
+
+  ```
+  #define SYSCALL_NAME open
+  ```
+
+- glibc 的 syscal-template.S 使用这些宏, 定义了系统调用的调用方式(也是通过宏)
+
+  ```
+  T_PSEUDO (SYSCALL_SYMBOL, SYSCALL_NAME, SYSCALL_NARGS)
+      ret
+  T_PSEUDO_END (SYSCALL_SYMBOL)
+  
+  #define T_PSEUDO(SYMBOL, NAME, N)		PSEUDO (SYMBOL, NAME, N)
+  ```
+
+- 其中会调用 DO_CALL (也是一个宏), 32位与 64位实现不同
+
+  
+
+32位 DO_CALL (位于 i386 目录下 sysdep.h)：
+
+- 将调用参数放入寄存器中, 由系统调用名得到系统调用号, 放入 eax
+
+- 执行 ENTER_KERNEL(一个宏), 对应 int $0x80 触发软中断, 进入内核
+
+- 调用软中断处理函数 entry_INT80_32(内核启动时, 由 trap_init() 配置)
+
+  ```
+  set_system_intr_gate(IA32_SYSCALL_VECTOR, entry_INT80_32);
+  ```
+
+- entry_INT80_32 将用户态寄存器存入 pt_regs 中(保存现场以及系统调用参数), 调用 do_syscall_32_iraq_on 
+
+- do_syscall_32_iraq_on 从 pt_regs 中取系统调用号(eax), 从系统调用表得到对应实现函数, 取 pt_regs 中存储的参数, 调用系统调用
+
+- entry_INT80_32 调用 INTERRUPT_RUTURN(一个宏)对应 iret 指令, 系统调用结果存在 pt_regs 的 eax 位置, 根据 pt_regs 恢复用户态进程
+
+  ```
+  #define INTERRUPT_RETURN                iret
+  ```
+
+  
+
+64位 DO_CALL (位于 x86_64 目录下 sysdep.h)：
+
+- 通过系统调用名得到系统调用号, 存入 rax; 不同于中断, 执行的是 syscall 指令，而且传递参数的寄存器也变了
+
+- syscall 使用了MSR(特殊模块寄存器), 辅助完成某些功能(包括系统调用)
+
+- trap_init() 会调用 cpu_init->syscall_init 设置该寄存器
+
+  ```
+  wrmsrl(MSR_LSTAR, (unsigned long)entry_SYSCALL_64);
+  ```
+
+- syscall 从 MSR 寄存器中拿出函数地址进行调用, 即调用 entry_SYSCALL_64
+
+- entry_SYSCALL_64 先保存用户态寄存器到 pt_regs 中
+
+- 调用 entry_SYSCALL64_slow_pat->do_syscall_64
+
+- do_syscall_64 从 rax 取系统调用号, 从系统调用表得到对应实现函数, 取 pt_regs 中存储的参数, 调用系统调用
+
+- 返回执行 USERGS_SYSRET64(一个宏), 对应执行 swapgs 和 sysretq 指令; 系统调用结果存在 pt_regs 的 ax 位置, 根据 pt_regs 恢复用户态进程
+
+  ```
+  #define USERGS_SYSRET64				\
+  	swapgs;					\
+  	sysretq;
+  ```
+
+
+
+无论是 32 位，还是 64 位，都会回到系统调用表 sys_call_table：
+
+- 32位 定义在 arch/x86/entry/syscalls/syscall_32.tbl 
+
+    ```
+    5	i386	open			sys_open  compat_sys_open
+    ```
+
+- 64位 定义在 arch/x86/entry/syscalls/syscall_64.tbl
+
+    ```
+    2	common	open			sys_open
+    ```
+
+- syscall_*.tbl 内容包括: 系统调用号, 系统调用名, 内核实现函数名(以 sys 开头)
+
+- 内核实现函数的声明: include/linux/syscall.h
+
+- 内核实现函数的实现: 某个 .c 文件, 例如 sys_open 的实现在 fs/open.c
+
+    - .c 文件中, 以宏的方式替代函数名, 用多层宏构建函数头
+
+- 编译过程中, 通过 syscall_32.tbl和syscall_64.tbl  生成 unistd_32.h 和 unistd_64.h文件
+
+    - unistd_32.h 和 unistd_64.h包含系统调用与实现函数的对应关系
+
+- syscall_*.h include 了 unistd_*.h 头文件, 并定义了系统调用表(数组)
+
+
 
 ### 创建快捷方式
 
