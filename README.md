@@ -170,7 +170,7 @@ grub2-mkconfig -o /boot/grub2/grub.cfg
 
 启动盘第一个扇区(512字节, 由 Grub2 写入 boot.img 镜像)，BIOS 完成任务后，会将 boot.img 从硬盘加载到内存中的 0x7c00 来运行
 
-### BOOTLOADER
+### Bootloader
 
 boot.img 加载 Grub2 的 core.img 镜像；core.img 包括 diskroot.img(diskboot.S)、 lzma_decompress.img(startup_raw.S)、kernel.img(startup.S) 以及其他模块；boot.img 先加载运行 diskroot.img, 再由 diskroot.img 加载 core.img 的其他内容；diskroot.img 解压运行 lzma_decompress.img、kernel.img(grub 的内核)，最后是各个模块对应的映像， 由lzma_decompress.img 切换到保护模式
 
@@ -186,7 +186,56 @@ boot.img 加载 Grub2 的 core.img 镜像；core.img 包括 diskroot.img(diskboo
   - 例如选择 linux16, 会先读取内核头部数据进行检查, 检查通过后加载完整系统内核
   - 启动系统内核 grub_command_execute (“boot”, 0, 0)
 
+### 内核初始化
 
+`start_kernel()` 函数(位于 init/main.c), 初始化做三件事
+
+- 创建样板进程, 及各个模块初始化
+- 创建管理/创建用户态进程的进程
+- 创建管理/创建内核态进程的进程
+
+### 0号进程
+
+样板进程, 即第一个进程. `set_task_stack_end_magic(&init_task)`，定义是 `struct task_struct init_task = INIT_TASK(init_task)`，这是唯一一个没有通过fork 或者 kernel_thread 产生的进程，是进程列表的第一个
+
+各个其他模块初始化包括：
+
+- 初始化中断, `trap_init()`. 系统调用也是通过发送中断进行, 由 `set_system_intr_gate()` 完成.
+- 初始化内存管理模块, `mm_init()`
+- 初始化进程调度模块, `sched_init()`
+- 初始化基于内存的文件系统 rootfs, `vfs_caches_init()`
+    - VFS(虚拟文件系统)将各种文件系统抽象成统一接口
+- 调用 `rest_init()` 完成其他初始化工作
+
+### 1号进程
+
+创建管理/创建用户态进程的进程，是所有内核态进程的祖先，这是第一个用户态进程
+
+* ` rest_init()` 通过 `kernel_thread(kernel_init, NULL, CLONE_FS)` 创建1号进程(工作在用户态)
+
+- 权限管理
+    - x86 提供 4个 Ring 分层权限，Ring0：内核，Ring1：设备驱动，Ring2：设备驱动，Ring3：应用
+    - 操作系统利用: Ring0-内核态(访问核心资源); Ring3-用户态(普通程序)
+- 用户态调用系统调用: 用户态-系统调用-保存寄存器-内核态执行系统调用-恢复寄存器-返回用户态
+- 新进程执行 kernel_init 函数, 先运行 ramdisk 的 /init 程序(位于内存中)
+    - 首先加载 ELF 文件（Executable and Linkable Format，可执行与可链接格式）
+    - 极客时间版权所有: https://time.geekbang.org/column/article/90109
+    - 设置用于保存用户态寄存器的结构体
+    - 返回进入用户态
+    - /init 加载存储设备的驱动，这时就切到用户态开始运行了
+ - kernel_init 函数启动存储设备文件系统上的 init
+
+ramdisk：基于内存的文件系统。内存访问不需要驱动。这个时候，ramdisk 是根文件系统。开始运行 ramdisk 上的 /init。等它运行完了就已经在用户态了。/init 这个程序会先根据存储系统的类型加载驱动，有了驱动就可以设置真正的根文件系统了。有了真正的根文件系统，ramdisk 上的 /init 会启动文件系统上的 init。接下来就是各种系统的初始化。启动系统的服务，启动控制台，用户就可以登录进来了。rest_init 的第一大事情才完成。仅仅形成了用户态所有进程的祖先。rest_init 第二大事情就是第三个进程，就是 2 号进程
+
+###  2号进程
+
+创建管理/创建内核态进程的进程，是所有内核态进程的祖先
+
+- `rest_init()` 通过 `kernel_thread(kthreadd, NULL, CLONE_FS | CLONE_FILES)` 创建 2号进程(工作在内核态)
+
+- `kthreadd` 负责所有内核态线程的调度和管理
+
+  
 
 ### 创建快捷方式
 
