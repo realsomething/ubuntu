@@ -91,10 +91,100 @@ SHELL 　　  当前用户Shell类型
 3. 以服务方式运行
 
    ```
-   /lib/systemd/system 目录下会创建一个XXX.service 的配置文件，里面定义了如何启动、如何关闭
+   /lib/systemd/system 目录下会创建一个XXX.service 的配置文件，里面定义了如何启动、如何关闭X86体系
    ```
 
-   
+#### X86体系
+
+CPU结构基于英特尔的 8086，因此称为 x86 架构
+
+```
+型号	总线位宽	地址位		寻址空间
+8080	8		16			64K(2^16)
+8086	16		20			1M
+8088	8		20			1M
+80386	32		32			4G
+```
+
+CPU与内存传数据，主要有两类数据，地址数据和真正的数据
+
+地址总线：位数决定了能访问的地址范围
+
+数据总线：位数决定了一次能保存多少位数据
+
+### 16位寄存器
+
+8个16位通用寄存器：AX、BX、CX、DX、SP、BP、SI、DI
+
+AX、BX、CX、DX可以分为AH、AL、BH、BL、CH、CL、DH、DL
+
+IP：指令指针寄存器（Instruction Pointer Register)，指向代码段中下一条指令的位置
+
+为了切换进程，有四个16位段寄存器：
+
+CS：代码段寄存器（Code Segment Register），通过它可以找到代码在内存中的位置
+
+DS：数据段的寄存器（Data Register），通过它可以找到数据在内存中的位置
+
+SS：栈寄存器（Stack Register），凡是与函数调用相关的操作，都与栈紧密相关
+
+ES：附加段寄存器（Extra Register）
+
+如果运算中需要加载内存中的数据，需要通过 DS 找到内存中的数据，起始地址+偏移量，加载到通用寄存器中
+
+在 CS 和 DS 中都存放着一个段的起始地址。代码段的偏移量会放在通用寄存器中
+
+起始地址CS和DS，偏移量IP和通用寄存器，都是16位，而地址总线是20位，需要把CS和DS左移4位，变成20位，加上16位的偏移量。8086CPU，最多只能访问 1M 的内存空间，还要分成多个段，每个段最多 64K
+
+### 32位寄存器
+
+8个16位通用寄存器，以及IP，依旧放在低16位，可以兼容32位，改动比较大的是段寄存器
+
+CS、SS、DS、ES 仍然是 16 位的，但是不再是段的起始地址。段的起始地址放在内存的某个地方。这个地方是一个表格，里面是真正的段的起始地址。而段寄存器里面保存的是在这个表格中的哪一项，称为选择子（Selector）。将一个从段寄存器直接拿到的段起始地址，就变成了先间接地从段寄存器找到表格中的一项，再从表格中的一项中拿到段起始地址。
+
+32 位的系统架构下，我们将前一种模式称为实模式（Real Pattern），后一种模式称为保护模式（Protected Pattern）。当系统刚刚启动的时候，CPU 是处于实模式的，这个时候和原来的模式是兼容的。也就是说，哪怕你买了 32 位的 CPU，也支持在原来的模式下运行，只不过快了一点而已
+
+### BIOS
+
+ROM会固化一些初始化的程序，如BIOS。实模式只有 1MB 内存寻址空间。加电, 重置 CS 为 0xFFFF , IP 为 0x0000, 第一条指令指向0xFFFF0，BIOS 做以下三件事:
+
+- 检查硬件
+
+- 提供基本输入(中断)输出(显存映射)服务
+
+- 加载 MBR 到内存(0x7c00)
+
+  
+
+BIOS的界面会有一个启动盘，一般在第一个扇区，占512个字节，以0xAA55结束，启动盘是Grub2放置在这的
+
+###Grub2
+
+Grand Unified Bootloaer Version 2：
+
+```
+grub2-mkconfig -o /boot/grub2/grub.cfg
+```
+
+### MBR
+
+启动盘第一个扇区(512字节, 由 Grub2 写入 boot.img 镜像)，BIOS 完成任务后，会将 boot.img 从硬盘加载到内存中的 0x7c00 来运行
+
+### BOOTLOADER
+
+boot.img 加载 Grub2 的 core.img 镜像；core.img 包括 diskroot.img(diskboot.S)、 lzma_decompress.img(startup_raw.S)、kernel.img(startup.S) 以及其他模块；boot.img 先加载运行 diskroot.img, 再由 diskroot.img 加载 core.img 的其他内容；diskroot.img 解压运行 lzma_decompress.img、kernel.img(grub 的内核)，最后是各个模块对应的映像， 由lzma_decompress.img 切换到保护模式
+
+------
+
+- lzma_decompress.img切换到保护模式需要做以下三件事:
+  - 启用分段, 辅助进程管理
+  - 启动分页, 辅助内存管理
+  - 打开其他地址线
+- lzma_decompress.img解压运行kernel.img 做以下四件事:
+  - 解析 grub.conf 文件
+  - 选择操作系统
+  - 例如选择 linux16, 会先读取内核头部数据进行检查, 检查通过后加载完整系统内核
+  - 启动系统内核 grub_command_execute (“boot”, 0, 0)
 
 
 
