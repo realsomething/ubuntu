@@ -526,6 +526,52 @@ ramdisk：基于内存的文件系统。内存访问不需要驱动。这个时�
       pthread_cond_destroy(&g_task_cv);
       ```
 
+#### 内核任务
+
+内核中进程, 线程统一为任务, 由 taks_struct 表示，它是一个链表
+
+- task_struct 中包含: 任务ID; 任务状态; 信号处理相关字段; 调度相关字段; 亲缘关系; 权限相关; 运行统计; 内存管理; 文件与文件系统; 内核栈;
+
+- 任务 ID; 包含 pid, tgid 和 \*group_leader
+    - pid(process id, 线程的id); tgid(thread group id, 所属进程[主线程]的id); group_leader 指向 tgid 的结构体
+    - 通过对比 pid 和 tgid 是否相同可判断是进程还是线程
+
+- 信号处理, 包含阻塞暂不处理、等待处理、正在处理的信号
+    - 信号处理函数默认使用用户态的函数栈, 也可以开辟新的栈专门用于信号处理, 由 sas_ss_xxx 指定
+    - 通过 pending/shared_pending 区分进程和线程的信号
+
+- 任务状态; 包含 state; exit_state; flags
+    - 准备运行状态 TASK_RUNNING
+
+    - 睡眠状态：可中断; 不可中断; 可杀
+        - 可中断 TASK_INTERRUPTIBLE，浅睡眠，收到信号要被唤醒，只不过唤醒后，不是继续刚才的操作，而是进行信号处理
+
+        - 不可中断 TASK_UNINTERRUPTIBLE，深睡眠，一旦等待的IO操作无法完成，则收到信号不会被唤醒, 自然不能被kill, 只能重启
+
+        - 可杀 TASK_KILLABLE, 可以响应致命信号, 由不可中断与 TASK_WAKEKILL 组合
+
+          ```
+          #define TASK_KILLABLE           (TASK_WAKEKILL | TASK_UNINTERRUPTIBLE)
+          ```
+
+    - 停止状态 TASK_STOPPED, 由信号 SIGSTOP, SIGTTIN, SIGTSTP 与 SIGTTOU 触发进入
+
+    - 调试跟踪 TASK_TRACED， 被 debugger 等进程监视时进入
+
+    - 结束状态(包含 exit_state)
+        - EXIT_ZOMBIE, 父进程还没有使用 wait()等系统调用获知它的终止信息，此时就是僵尸进程
+        - EXIT_DEAD, 最终状态
+
+    - 其他的标志则放到flags
+
+        * PF_EXISTING 表示正在退出，在函数 find_alive_thread 中，找活着的线程时，遇到有这个 flag 的，就直接跳过
+        * PF_VCPU 表示运行在虚拟 CPU 上
+        * PF_FORKNOEXEC表示 fork 完了，还没有 exec，在 \_do_fork 函数里设置，exec 函数中清除
+
+- 进程调度; 包含 是否在运行队列; 优先级; 调度策略; 可以使用那些 CPU 等信息.
+
+
+
 
 
 ### 创建快捷方式
