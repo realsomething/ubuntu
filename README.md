@@ -215,7 +215,6 @@ boot.img 加载 Grub2 的 core.img 镜像；core.img 包括 diskroot.img(diskboo
 - 用户态调用系统调用: 用户态-系统调用-保存寄存器-内核态执行系统调用-恢复寄存器-返回用户态
 - 新进程执行 kernel_init 函数, 先运行 ramdisk 的 /init 程序(位于内存中)
     - 首先加载 ELF 文件（Executable and Linkable Format，可执行与可链接格式）
-    - 极客时间版权所有: https://time.geekbang.org/column/article/90109
     - 设置用于保存用户态寄存器的结构体
     - 返回进入用户态
     - /init 加载存储设备的驱动，这时就切到用户态开始运行了
@@ -228,10 +227,7 @@ ramdisk：基于内存的文件系统。内存访问不需要驱动。这个时�
 创建管理/创建内核态进程的进程，是所有内核态进程的祖先
 
 - `rest_init()` 通过 `kernel_thread(kthreadd, NULL, CLONE_FS | CLONE_FILES)` 创建 2号进程(工作在内核态)
-
 - `kthreadd` 负责所有内核态线程的调度和管理
-
-  
 
 ### glibc 
 
@@ -345,6 +341,119 @@ ramdisk：基于内存的文件系统。内存访问不需要驱动。这个时�
     - unistd_32.h 和 unistd_64.h包含系统调用与实现函数的对应关系
 
 - syscall_*.h include 了 unistd_*.h 头文件, 并定义了系统调用表(数组)
+
+### ELF文件的分类
+
+编译成 ELF 格式的二进制文件, 有三种格式(可重定位 .o 文件; 可执行文件; 共享对象文件 .so)
+
+- 可重定位 .o 文件(ELF 第一种格式)
+    - .h + .c 文件, 编译得到**可重定位** .o 文件 
+
+    - .o 文件由: ELF 头, 多个节(section), 节头部表组成(每个节的元数据); 节表的位置和纪录数由 ELF 头给出
+
+      ```
+      section包括：
+      .text：放编译好的二进制可执行代码
+      .data：已经初始化好的全局变量
+      .rodata：只读数据，例如字符串常量、const 的变量
+      .bss：未初始化全局变量，运行时会置 0
+      .symtab：符号表，记录的则是函数和变量
+      .strtab：字符串表、字符串常量和变量名
+      ```
+
+    - .o 文件只是程序部分代码片段
+
+    - .rel.text 和 .rel.data 标注了哪些函数/变量需要重定位
+
+    - 要函数可被调用, 要以库文件的形式存在, 最简单是创建静态链接库 .a 文件(Archives)，通过 ar 创建静态链接库
+
+      ```
+      ar cr libstaticprocess.a process.o
+      ```
+
+       通过 gcc 提取库文件中的 .o 文件, 链接到程序中
+
+      ```
+      gcc -o staticcreateprocess createprocess.o -L. -lstaticprocess
+      
+      -L 表示在当前目录下找.a 文件，-lstaticprocess 会自动补全文件名，比如加前缀 lib，后缀.a，变成 libstaticprocess.a，找到这个.a 文件后，将里面的 process.o 取出来，和 createprocess.o 做一个链接，形成二进制执行文件 staticcreateprocess
+      ```
+
+    - 链接合并后, 就可以定位到函数/数据的位置, 形成可执行文件
+
+- 可执行文件(ELF 第二种格式)
+    - 链接合并后, 形成可执行文件，这个格式和.o 文件大致相似，还是分成一个个的 section，并且被节头表描述。只不过这些 section 是多个.o合并过的
+
+    - 同样包含: ELF 头, 多个节, 节头部表; 另外还有段头表(包含段的描述, p_vaddr 段加载到内存的虚拟地址)
+
+      ```
+      section包括：
+      代码段：
+      .text：放编译好的二进制可执行代码
+      .rodata：只读数据，例如字符串常量、const 的变量
+      
+      数据段：
+      .data：已经初始化好的全局变量
+      .bss：未初始化全局变量，运行时会置 0
+      
+      不加载到内存：
+      .symtab：符号表，记录的则是函数和变量
+      .strtab：字符串表、字符串常量和变量名
+      ```
+
+    - ELF 头中有 e_entry , 指向程序入口的虚拟地址
+
+    - 静态链接库一旦链接进去，代码和变量的 section 都合并了，因而程序运行的时候，就不依赖于这个库是否存在。但是这样相同的代码段，如果被多个程序使用的话，在内存里面就有多份，而且一旦静态链接库更新了，如果二进制执行文件不重新编译，也不随着更新
+
+- 共享对象 .so 文件(Shared Libraries，ELF 第三种格式)
+    - 静态链接库合并进可执行文件, 但是多个进程不能共享
+
+    - 动态链接库-链接了动态链接库的程序, 仅包含对该库的引用(且只保存名称),而不包含其代码
+
+      ```
+      gcc -o dynamiccreateprocess createprocess.o -L. -ldynamicprocess
+      
+      通过 gcc 创建和链接, 运行时, 先找到动态链接库(默认在 /lib 和 /usr/lib 找),找不到就会报错，我们可以设定 LD_LIBRARY_PATH环境变量，程序运行时会在此环境变量指定的文件夹下寻找动态链接库
+      
+      export LD_LIBRARY_PATH=.
+      ```
+
+    - ELF的section增加了 .interp 段, 里面是 ld_linux.so (动态链接器)
+
+    - 增加了两个节 .plt(Procedure Linkage Table：过程链接表)和 .got.plt(Global Offset Table：全局偏移表)
+
+    - 一个动态链接函数对应 plt 中的一项 plt[x], plt[x] 中是代理代码, 调用 got 中的一项 got[y]
+
+    - 起始, got 没有动态链接函数的地址, 都指向 plt[0], plt[0] 又调用 got[2], got[2]指向 ld_linux.so
+
+    - ld_linux.so 找到加载到内存的动态链接函数的地址, 并将地址存入 got[y]
+
+- 加载 ELF 文件到内存
+    - 系统调用 exec 最终调用 load_elf_binary(do_execve->do_execveat_common->exec_binprm->search_binary_handler)
+    - exec 是一组函数
+        - 包含 p: 在 PATH 中找程序，如 execvp, execlp
+        - 不包含 p: 需提供全路径
+        - 包含 v: 以数字接收参数，如 execv, execvp, execve
+        - 包含 l: 以列表接收参数，如 execl, execlp, execle
+        - 包含 e: 以数字接收环境变量，如 execve, execle
+
+- 进程树
+
+    所有的进程都是从父进程 fork 过来的，祖宗进程就是系统启动的 init 进程，系统启动之后，init 进程会启动很多的 daemon 进程，为系统运行提供服务，然后启动 getty，让用户登录
+
+    - ps -ef: 用户进程不带中括号, 内核进程带中括号
+    - 用户进程祖先(1号进程, systemd); 内核进程祖先(2号进程, kthreadd)
+    - tty ? 一般表示后台服务
+
+* 分析工具
+
+  * readelf 工具用于分析 ELF 的信息
+
+  * objdump工具用来显示二进制文件的信息
+
+  * hexdump 工具用来查看文件的十六进制编码
+
+  * nm 工具用来显示关于指定文件中符号的信息
 
 
 
