@@ -530,7 +530,7 @@ ramdisk：基于内存的文件系统。内存访问不需要驱动。这个时�
 
 内核中进程, 线程统一为任务, 由 taks_struct 表示，它是一个链表
 
-- task_struct 中包含: 任务ID; 任务状态; 信号处理相关字段; 调度相关字段; 亲缘关系; 权限相关; 运行统计; 内存管理; 文件与文件系统; 内核栈;
+- task_struct 中包含: 任务ID; 任务状态; 信号处理相关字段; 调度相关字段; 亲缘关系; 权限相关; 运行统计; 内存管理; 文件与文件系统; 内核栈
 
 - 任务 ID; 包含 pid, tgid 和 \*group_leader
     - pid(process id, 线程的id); tgid(thread group id, 所属进程[主线程]的id); group_leader 指向 tgid 的结构体
@@ -568,9 +568,114 @@ ramdisk：基于内存的文件系统。内存访问不需要驱动。这个时�
         * PF_VCPU 表示运行在虚拟 CPU 上
         * PF_FORKNOEXEC表示 fork 完了，还没有 exec，在 \_do_fork 函数里设置，exec 函数中清除
 
-- 进程调度; 包含 是否在运行队列; 优先级; 调度策略; 可以使用那些 CPU 等信息.
+- 进程调度; 包含 是否在运行队列; 优先级; 调度策略; 可以使用那些 CPU 等信息
 
+- 运行统计信息, 包含用户/内核态运行时间; 上/下文切换次数; 启动时间等
 
+    ```
+    u64				utime;// 用户态消耗的 CPU 时间
+    u64				stime;// 内核态消耗的 CPU 时间
+    unsigned long	nvcsw;//  自愿 (voluntary) 上下文切换计数
+    unsigned long	nivcsw;// 非自愿 (involuntary) 上下文切换计数
+    u64				start_time;		// 进程启动时间，不包含睡眠时间
+    u64				real_start_time;// 进程启动时间，包含睡眠时间
+    ```
+
+- 进程亲缘关系
+
+    ```
+    struct task_struct __rcu *real_parent; 	/* real parent process */
+    struct task_struct __rcu *parent; 		/* recipient of SIGCHLD, wait4() reports */
+    struct list_head children;      /* list of my children */
+    struct list_head sibling;       /* linkage in my parent's children list */
+    ```
+
+    - 拥有同一父进程的所有进程具有兄弟关系
+    - children 表示链表的头部，链表中的所有元素都是它的子进程
+    - sibling 用于把当前进程插入到兄弟链表中
+    - parent 指向的父进程接收进程结束信号
+    - real_parent 和 parent 通常一样; 但在 bash 中用 GDB 调试程序时, GDB 是 parent, bash 是 real_parent
+
+- 进程权限, 包含 real_cred 指针(谁能操作我); cred 指针(我能操作谁)
+
+    ```
+    /* Objective and real subjective task credentials (COW): */
+    const struct cred __rcu         *real_cred;	// 谁能操作我
+    /* Effective (overridable) subjective task credentials (COW): */
+    const struct cred __rcu         *cred;		// 我能操作谁
+    ```
+
+    ```
+    struct cred {
+    ......
+            kuid_t          uid;            /* real UID of the task */
+            kgid_t          gid;            /* real GID of the task */
+            kuid_t          suid;           /* saved UID of the task */
+            kgid_t          sgid;           /* saved GID of the task */
+            kuid_t          euid;           /* effective UID of the task */
+            kgid_t          egid;           /* effective GID of the task */
+            kuid_t          fsuid;          /* UID for VFS ops */
+            kgid_t          fsgid;          /* GID for VFS ops */
+    ......
+            kernel_cap_t    cap_inheritable; /* caps our children can inherit */
+            kernel_cap_t    cap_permitted;  /* caps we're permitted */
+            kernel_cap_t    cap_effective;  /* caps we can actually use */
+            kernel_cap_t    cap_bset;       /* capability bounding set */
+            kernel_cap_t    cap_ambient;    /* Ambient capability set */
+    ......
+    } __randomize_layout;
+    ```
+
+    - cred 结构体中标明多组用户和用户组 id
+
+    - uid/gid(哪个用户的进程启动我，权限审核不比较这两个)
+
+    - euid/egid(按照哪个用户审核权限, 操作消息队列, 共享内存等，真正起作用的用户和组)
+
+    - fsuid/fsgid(文件操作时审核)
+
+    - 一般说来，fsuid、euid，和 uid 是一样的，fsgid、egid，和 gid 也是一样的。因为谁启动的进程，就应该审核启动的用户到底有没有这个权限
+
+    - 通过 chmod u+s program, 给程序设置 set-user-id 标识位, 运行时程序将进程 euid/fsuid 改为程序文件所有者 id，而program的实际所有者保存在suid/sgid中
+
+    - suid/sgid 可以用来保存 id, 进程可以通过 setuid 更改 uid
+
+    - capability 机制, 以细粒度赋予普通用户部分高权限 (capability.h 列出了权限)
+
+        ```
+        #define CAP_CHOWN            0
+        #define CAP_KILL             5
+        #define CAP_NET_BIND_SERVICE 10
+        #define CAP_NET_RAW          13
+        #define CAP_SYS_MODULE       16
+        #define CAP_SYS_RAWIO        17
+        #define CAP_SYS_BOOT         22
+        #define CAP_SYS_TIME         25
+        #define CAP_AUDIT_READ       37
+        #define CAP_LAST_CAP         CAP_AUDIT_READ
+        ```
+
+        - cap_permitted 表示进程的权限
+        - cap_effective 实际起作用的权限, cap_permitted 范围可大于 cap_effective，一个进程在必要的时候放弃某些权限，更加安全
+        - cap_inheritable 若可执行文件的扩展属性设置了该权限，表示可被继承, 在 exec 执行时继承的权限集合, 并加入 cap_permitted 中(但非 root 用户不会保留 cap_inheritable 集合)
+        - cap_bset(capability bounding set)所有进程保留的权限(限制只用一次的功能)，如系统启动以后，将加载内核模块的权限去掉，那所有进程都不能加载内核模块。即便这台机器被攻破，也做不了太多有害的事情
+        - cap_ambient 比较新加入内核的，就是为了解决 cap_inheritabl鸡肋的问题 ，exec 时, 并入 cap_permitted 和 cap_effective 中
+
+- 内存管理: mm_struct
+
+    ```
+    struct mm_struct                *mm;
+    struct mm_struct                *active_mm;
+    ```
+
+- 文件与文件系统: 打开的文件, 文件系统相关数据结构
+
+    ```
+    /* Filesystem information: */
+    struct fs_struct                *fs;
+    /* Open file information: */
+    struct files_struct             *files;
+    ```
 
 
 
