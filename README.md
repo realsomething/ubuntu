@@ -735,7 +735,97 @@ void  *stack;
   - 32位 直接由 thread_info 中的指针得到
   - 64位 每个 CPU 当前运行进程的 task_struct 的指针存放到 Per CPU 变量 current_task 中; 可调用 this_cpu_read_stable 进行读取
 
+### 调度策略与调度类
 
+进程包括两类: 实时进程(优先级高); 普通进程。 两种进程调度策略不同: task_struct->policy 指明采用哪种调度策略(有6种策略)
+
+```
+unsigned int policy;
+
+#define SCHED_NORMAL		0
+#define SCHED_FIFO		    1
+#define SCHED_RR		    2
+#define SCHED_BATCH		    3
+#define SCHED_IDLE		    5
+#define SCHED_DEADLINE		6
+
+int prio, static_prio, normal_prio;
+unsigned int rt_priority;
+```
+
+优先级配合调度策略, 实时进程(0-99); 普通进程(100-139)
+
+#### 实时调度策略
+
+高优先级可抢占低优先级进程
+
+- SCHED_FIFO: 相同优先级进程先来先得
+- SCHED_RR: 轮流调度策略, 采用时间片轮流调度相同优先级进程
+- SCHED_DEADLINE: 在调度时, 选择 deadline 最近的进程
+
+#### 普通调度策略
+
+- SCHED_NORMAL: 普通进程
+- SCHED_BATCH: 后台进程, 可以降低优先级
+- SCHED_IDLE: 空闲时才运行
+
+#### 调度策略的调度类
+
+task_struct 中 * sched_class 指向封装了调度策略执行逻辑的类(有5种)
+
+- stop_sched_class: 优先级最高. 将中断其他所有进程, 且不能被打断
+- dl_sched_class: 实现 deadline 调度策略
+- rt_sched_class: RR 或 FIFO, 具体策略由 task_struct->policy 指定
+- fair_sched_class: 普通进程调度
+- idle_sched_class: 空闲进程调度
+
+#### 普通进程的 fair 完全公平调度算法 CFS
+
+- 记录进程运行时间( vruntime 虚拟运行时间)
+- 优先调度 vruntime 小的进程
+- 按照比例累计 vruntime, 使之考虑进优先级关系
+
+```
+虚拟运行时间 vruntime += 实际运行时间 delta_exec * NICE_0_LOAD/ 权重
+```
+
+#### 调度队列和调度实体
+
+- CFS 中需要对 vruntime 排序找最小, 不断查询更新, 因此利用红黑树实现调度队列
+- task_struct 中有 实时调度实体sched_rt_entity, Deadline 调度实体sched_dl_entity 和 完全公平调度实体 sched_entity, cfs 调度实体即红黑树节点
+- 所有可运行的进程通过不断地插入操作最终都存储在以时间为顺序的红黑树中，vruntime 最小的在树的左侧，vruntime 最多的在树的右侧。 CFS 调度策略会选择红黑树最左边的叶子节点作为下一个将获得 cpu 的任务
+- 每个 CPU 都有 rq 结构体, 里面有 rt_rq 和 cfs_rq 调度队列以及其他信息; 队列描述该 CPU 所运行的所有进程
+- 先在 rt_rq 中找进程运行, 若没有再到 cfs_rq 中找; cfs_rq 中 rb_root 指向红黑树根节点, rb_leftmost指向最左节点
+
+#### 调度类如何工作
+
+```
+struct sched_class {
+	const struct sched_class *next;
+...
+	void (*enqueue_task) (struct rq *rq, struct task_struct *p, int flags);
+	void (*dequeue_task) (struct rq *rq, struct task_struct *p, int flags);
+...
+	struct task_struct * (*pick_next_task) (struct rq *rq,
+						struct task_struct *prev,
+						struct rq_flags *rf);
+
+}
+extern const struct sched_class stop_sched_class;
+extern const struct sched_class dl_sched_class;
+extern const struct sched_class rt_sched_class;
+extern const struct sched_class fair_sched_class;
+extern const struct sched_class idle_sched_class;
+const struct sched_class fair_sched_class = {
+	.next			= &idle_sched_class,
+	...
+}
+```
+
+- 调度类中有一个成员指向下一个调度类(按优先级顺序串起来)
+- 找下一个运行任务时, 按 stop-dl-rt-fair-idle 依次调用调度类, 不同调度类操作不同调度队列
+- 对于同样的 pick_next_task 选取下一个要运行的任务这个动作，不同的调度类有自己的实现。fair_sched_class 的实现是 pick_next_task_fair，rt_sched_class 的实现是 pick_next_task_rt。我们会发现这两个函数是操作不同的队列，pick_next_task_rt 操作的是 rt_rq，pick_next_task_fair 操作的是 cfs_rq
+- 在每个 CPU 上都有一个队列 rq，这个队列里面包含多个子队列，例如 rt_rq 和 cfs_rq，不同的队列有不同的实现方式。某个 CPU 需要找下一个任务执行的时候，会按照优先级依次调度类，不同的调度类操作不同的队列。当然 rt_sched_class 先被调用，它会在 rt_rq 上找下一个任务，只有找不到的时候，才轮到 fair_sched_class 被调用，它会在 cfs_rq 上找下一个任务。这样保证了实时任务的优先级永远大于普通任务
 
 
 
