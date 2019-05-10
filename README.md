@@ -827,7 +827,58 @@ const struct sched_class fair_sched_class = {
 - 对于同样的 pick_next_task 选取下一个要运行的任务这个动作，不同的调度类有自己的实现。fair_sched_class 的实现是 pick_next_task_fair，rt_sched_class 的实现是 pick_next_task_rt。我们会发现这两个函数是操作不同的队列，pick_next_task_rt 操作的是 rt_rq，pick_next_task_fair 操作的是 cfs_rq
 - 在每个 CPU 上都有一个队列 rq，这个队列里面包含多个子队列，例如 rt_rq 和 cfs_rq，不同的队列有不同的实现方式。某个 CPU 需要找下一个任务执行的时候，会按照优先级依次调度类，不同的调度类操作不同的队列。当然 rt_sched_class 先被调用，它会在 rt_rq 上找下一个任务，只有找不到的时候，才轮到 fair_sched_class 被调用，它会在 cfs_rq 上找下一个任务。这样保证了实时任务的优先级永远大于普通任务
 
+### 主动调度
 
+调度, 切换运行进程, 有两种方式
+
+- 进程调用 sleep 或等待 I/O, 主动让出 CPU
+- 进程运行一段时间, 被动让出 CPU
+
+这个片段可以看作写入块设备的一个典型场景，需要主动让出 CPU
+
+```
+static void btrfs_wait_for_no_snapshoting_writes(struct btrfs_root *root)
+{
+......
+	do {
+		prepare_to_wait(&root->subv_writers->wait, &wait,
+				TASK_UNINTERRUPTIBLE);
+		writers = percpu_counter_sum(&root->subv_writers->counter);
+		if (writers)
+			schedule();
+		finish_wait(&root->subv_writers->wait, &wait);
+	} while (writers);
+}
+```
+
+主动让出 CPU 的方式, 调用 schedule(), schedule() 调用 __schedule()
+
+- __schedule() 取出 rq; 取出当前运行进程的 task_struct
+
+- 调用 pick_next_task 取下一个进程
+
+  - 依次调用调度类(优化: 大部分都是普通进程), 因此大多数情况调用 fair_sched_class.pick_next_task[_fair]
+  - pick_next_task_fair 先取出 cfs_rq 队列, 取出当前运行进程调度实体, 更新 vruntime
+  - pick_next_entity 取最左节点, 并得到 task_struct, 若与当前进程不一样, 则更新红黑树 cfs_rq
+  - 选出的继任者和前任不同，就要进行上下文切换，继任者进程正式进入运行
+
+- 进程上下文切换:
+
+  切换进程内存空间（就是虚拟内存）, 切换寄存器和 CPU 上下文(运行 context_switch)
+
+  - context_switch() -> switch_to() -> __switch_to_asm(切换[内核]栈顶指针) -> __switch_to()
+  - __switch_to() 取出 Per CPU 的 TTS(Task State Segment，任务状态段)
+  - x86 提供以硬件方式切换进程的模式, 为每个进程在内存中维护一个 TTS, TTS 有所有寄存器, 同时 TR(Task Register, 任务寄存器)指向某个 TTS,将会触发硬件保存 CPU 所有寄存器的值到当前进程的 TSS,然后从新进程的 TSS 中读出所有寄存器值，加载到 CPU对应的寄存器中， 更改 TR 会触发换出 TTS(旧进程)和换入 TTS(新进程), 但切换进程没必要换所有寄存器
+  - Linux 中每个 CPU 关联一个 TTS, 同时 TR 不变, Linux 中参与进程切换主要是栈顶寄存器
+  - 进程切换，就是将某个进程的 thread_struct 里面寄存器的值，写入到 CPU 的 TR 指向的 tss_str_struct，对于 CPU 来讲，这就算是完成了切换
+  - task_struct 的 thread 结构体保留切换时需要修改的寄存器, 切换时将新进程 thread 写入 CPU TTS 中
+  - 具体各类指针保存位置和时刻
+    - 用户栈: 切换进程内存空间时切换
+    - 用户栈顶指针: 内核返回用户态时从内核栈 pt_regs 中弹出
+    - 用户指令指针: 内核返回用户态时从内核栈 pt_regs 中弹出
+    - 内核栈: 由切换的 task_struct 中的 stack 指针指向
+    - 内核栈顶指针: __switch_to_asm 修改 sp 后加载到 TTS
+    - 内核指令指针: ((last) = __switch_to_asm((pre), (next)))
 
 
 
