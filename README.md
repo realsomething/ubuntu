@@ -1,4 +1,3 @@
-# 
 ### 软件安装方式
 
 1. 安装包：
@@ -879,6 +878,72 @@ static void btrfs_wait_for_no_snapshoting_writes(struct btrfs_root *root)
     - 内核栈: 由切换的 task_struct 中的 stack 指针指向
     - 内核栈顶指针: __switch_to_asm 修改 sp 后加载到 TTS
     - 内核指令指针: ((last) = __switch_to_asm((pre), (next)))
+
+### 抢占式调度
+
+两种情况: 执行太久, 需切换到另一进程; 另一个高优先级进程被唤醒
+- 执行太久: 由时钟中断触发检测, 中断处理调用 scheduler_tick 
+    - 取当前进程 task_struct->task_tick_fair()->取 sched_entity cfs_rq 调用 entity_tick()
+    - entity_tick() 调用 update_curr 更新当前进程 vruntime, 调用 check_preempt_tick 检测是否需要被抢占
+    - check_preempt_tick 中计算 ideal_runtime(一个调度周期中应该运行的实际时间), 若进程本次调度运行时间 > ideal_runtime, 则应该被抢占
+    - 还要通过 __pick_first_entiry 取出红黑树中最小的进程，如果当前进程的 vruntime 大于该进程的 vruntime，且差值大于 ideal_runtime, 则应该被抢占 
+    - 要被抢占, 则调用 resched_curr, 设置 TIF_NEED_RESCHED, 将其标记为应被抢占进程(因为要等待当前进程运行 `__schedule`)
+- 另一个高优先级进程被唤醒: 当 I/O 完成, 进程被唤醒, 若优先级高于当前进程则触发抢占
+    - try_to_wake_up()->ttwu_queue() 将唤醒任务加入队列 调用 ttwu_do_activate 激活任务
+    - 调用 ttwu_do_wakeup()->check_preempt_curr() 检查是否应该抢占, 若需抢占则标记
+
+#### 抢占时机
+
+让进程调用 `__schedule`, 分为用户态和内核态
+
+- 用户态进程
+    - 时机-1: 从系统调用中返回, 返回过程中会调用 exit_to_usermode_loop, 检查 `_TIF_NEED_RESCHED`, 若打了标记, 则调用 schedule()
+
+      ```
+      static void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
+      {
+      	while (true) {
+      		/* We have work to do. */
+      		local_irq_enable();
+      
+      		if (cached_flags & _TIF_NEED_RESCHED)
+      			schedule();
+      ......
+      ```
+
+    - 时机-2: 从中断中返回, 中断返回分为返回用户态和内核态(汇编代码: arch/x86/entry/entry_64.S), 返回用户态过程中会调用 exit_to_usermode_loop()->shcedule()
+
+      ```
+      common_interrupt:
+      ...
+      /* Interrupt came from user space */
+      GLOBAL(retint_user)
+              mov     %rsp,%rdi
+              call    prepare_exit_to_usermode	// 返回用户态
+      ...
+      /* Returning to kernel space */
+      retint_kernel:
+      #ifdef CONFIG_PREEMPT
+      ...
+              call    preempt_schedule_irq		// 返回内核态
+              jmp     0b
+      ```
+- 内核态进程
+    - 时机-1: 发生在 preempt_enable() 中, 内核态进程有的操作不能被中断, 会调用 preempt_disable(), 在开启时(调用 preempt_enable) 时是一个抢占时机, 会调用 preempt_count_dec_and_test(), 检测 preempt_count 和标记, 若可抢占则最终调用 `__schedule`
+    - 时机-2: 在内核态也会遇到中断的情况，当中断返回的时候，返回的仍然是内核态，也会调用 `__schedule`
+
+```
+asmlinkage __visible void __sched preempt_schedule_irq(void)
+{
+......
+	do {
+		preempt_disable();
+		local_irq_enable();
+		__schedule(true);
+...
+```
+
+
 
 
 
