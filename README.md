@@ -943,7 +943,80 @@ asmlinkage __visible void __sched preempt_schedule_irq(void)
 ...
 ```
 
+### 进程创建
 
+fork是一个系统调用，最后会在 sys_call_table 找到相应的系统调用 sys_fork()->`_do_fork`
+
+创建进程做两件事: 复制初始化 task_struct; 唤醒新进程
+
+```
+long _do_fork(...)
+{
+...
+	p = copy_process(clone_flags, stack_start, stack_size,
+			 child_tidptr, NULL, trace, tls, NUMA_NO_NODE);
+...
+		wake_up_new_task(p);
+...
+```
+
+- 复制并初始化 task_struct, copy_process()
+    - dup_task_struct: 分配 task_struct 结构体; 创建内核栈, 赋给`* stack`; 复制 task_struct, 设置 thread_info;
+    - copy_creds: 权限相关：分配 cred 结构体并复制, p->cred = p->real_cred = get_cred(new)
+    - 初始化运行时统计量
+    - sched_fork 调度相关：分配并初始化 sched_entity; state = TASK_NEW; 实际和虚拟运行时间设置为0；设置优先级和调度类，普通进程就是fair_sched_class; 设置调度函数，对于CFS就是 task_fork_fair()，在update_curr 更新当前进程运行统计量, 将当前进程 vruntime 赋给子进程, 通过 sysctl_sched_child_runs_first 设置是否让子进程抢占, 若是则将其 sched_entity 放前头, 并调用 resched_curr 做被抢占标记TIF_NEED_RESCHED
+    - 初始化文件和文件系统变量 
+        - copy_files: 复制进程打开的文件信息, 用 files_struct 维护; 
+        - copy_fs: 复制进程目录信息，包括根目录/根文件系统; pwd 等, 用 fs_struct 维护。每个进程有自己的根目录和根文件系统 root，也有当前目录 pwd 和当前目录的文件系统
+    - 初始化信号相关内容: 复制信号和处理函数
+    - 复制内存空间: 分配并复制 mm_struct; 复制内存映射信息
+    - 分配 pid，设置 tid，group_leader，并且建立进程之间的亲缘关系
+
+- 唤醒新进程 wake_up_new_task()
+
+    ```
+    void wake_up_new_task(struct task_struct *p)
+    {
+    	struct rq_flags rf;
+    	struct rq *rq;
+    ...
+    	p->state = TASK_RUNNING;
+    ...
+    	activate_task(rq, p, ENQUEUE_NOCLOCK);
+    	p->on_rq = TASK_ON_RQ_QUEUED;
+    	trace_sched_wakeup_new(p);
+    	check_preempt_curr(rq, p, WF_FORK);
+    ...
+    ```
+
+    - state = TASK_RUNNING; activate 用调度类将当前子进程入队列
+
+    - 如果是 CFS 的调度类，则执行相应的 enqueue_task_fair，取出的队列ifs_rq，再调用enqueue_entiry ，其中会调用 update_curr 更新运行统计量, 再将 sched_entity 加入到红黑树里面
+
+      ```
+      static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_flags)
+      {
+      	struct task_struct *curr = rq->curr;
+      	struct sched_entity *se = &curr->se, *pse = &p->se;
+      	struct cfs_rq *cfs_rq = task_cfs_rq(curr);
+      ...
+      	if (test_tsk_need_resched(curr))
+      		return;
+      ...
+      	find_matching_se(&se, &pse);
+      	update_curr(cfs_rq_of(se));
+      	if (wakeup_preempt_entity(se, pse) == 1) {
+      		goto preempt;
+      	}
+      	return;
+      preempt:
+      	resched_curr(rq);
+      ...
+      ```
+
+    - 调用 check_preempt_curr 看是否能抢占, 若 task_fork_fair 中已设置 sysctl_sched_child_runs_first, 直接返回, 否则还是会调用 update_curr 更新一次统计量，然后 将父进程和子进程 PK 一次，看是不是要抢占，如果要调用 resched_curr 标记父进程为 TIF_NEED_RESCHED
+
+    - 若父进程被标记会被抢占, 则系统调用 fork 返回到用户态的时候会调度子进程
 
 
 
