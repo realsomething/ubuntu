@@ -1018,7 +1018,56 @@ long _do_fork(...)
 
     - 若父进程被标记会被抢占, 则系统调用 fork 返回到用户态的时候会调度子进程
 
+###线程的创建
 
+线程是由内核态和用户态合作完成的，pthread_create 是 Glibc 库的一个函数，而非系统调用，pthread_create 中，会做以下事情：
+
+1. 设置线程属性参数，如线程栈大小，没有传入，就取默认值
+
+2. 创建用户态维护线程的结构即 pthread
+
+3. 创建线程栈 allocate_stack
+    - 如果在线程属性设置过栈的大小，取栈的大小，为防止访问越界，在栈末尾加 guardsize
+    - 在进程堆中创建线程栈(先尝试从缓存中取用)
+    - 若无缓存线程栈, 调用 `__mmap` 创建
+    - 将 pthread 指向栈空间中
+    - 计算 guard 内存位置, 并设置保护
+    - 填充 pthread 内容, 其中 specific 存放属于线程的全局变量
+    - 线程栈放入 stack_used 链表中，表示正在使用(另外 stack_cache 链表记录缓存的线程栈)
+
+4. 设置运行函数start_routine，start_routine 的参数，以及调度策略到 pthread 中
+
+5. 调用 create_thread 创建线程
+
+    如果在进程的主线程里面调用其他系统调用，当前用户态的栈是指向整个进程的栈，栈顶指针也是指向进程的栈，指令指针也是指向进程的主线程的代码，如果不是主线程，这些都会变。将线程要执行的函数的参数和指令的位置都压到栈里面的工作需要自己做：
+
+    - 设置 clone_flags 标志位, 调用 `__clone`
+    - clone 系统调用返回时, 应该要返回到新线程上下文中, 因此 `__clone` 将参数和指令位置压入栈中, 返回时从该函数开始执行
+
+6. 内核调用 `__do_fork` 
+    - 在 copy_process 复制 task_struct 过程中, 五大数据结构不复制, 直接引用进程的，引用数要加一
+
+    - 亲缘关系设置: group_leader 和 tgid 是当前进程; real_parent 与当前进程一样
+
+    - 信号处理: 数据结构共享, 处理一样
+
+      * copy_process的时候，会初始化p->pending，每个task_struct都有这样一个成员变量，这是一个信号列表，如果这个task_struct是一个线程，则里面的信号是发给这个线程的，如果task_struct是一个进程，则里面的信号是发给主线程的
+
+        ```
+        init_sigpending(&p->pending);
+        ```
+
+      * 在创建进程的过程中，会初始化 signal_struct 里面的 struct sigpending shared_pending，创建线程会共享，即整个进程的所有线程会共享一个shared_pending，这也是一个信号列表，发给整个进程，哪个线程处理都一样
+
+        ```
+        init_sigpending(&sig->shared_pending);
+        ```
+
+7. 返回用户态，不是直接返回，而是先运行 start_thread 通用函数
+
+    - 在 start_thread 中调用用户的函数, 运行完释放线程相关数据
+    - 如果是最后一个线程直接退出进程
+    - 调用 `__free_tcb` 释放 pthread 以及线程栈, 从 stack_used 移到 stack_cache 中
 
 ### 创建快捷方式
 
