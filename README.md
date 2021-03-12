@@ -53,6 +53,7 @@
 - [作业控制](#作业控制)
 - [信号](#信号)
   - [查看](#查看-1)
+  - [发送](#发送)
   - [处理](#处理)
 - [守护进程](#守护进程)
 - [系统日志](#系统日志)
@@ -362,6 +363,12 @@ sudo cp -rf Crack/trial.key /usr/lib/beyondcompare/
 ```
 执行成功之后执行bcompare 命令 Tools->Options->Startup  勾中 include beyond Compare in file manager context menus， Tools->Options->Tweaks 去掉Check every勾
 
+过期之后重置
+
+```
+rm ~/.config/bcompare/registry.dat
+```
+
 ### 创建快捷方式
 ```
 ~/.local/share/applications
@@ -649,13 +656,21 @@ kill -l：查看所有信号
 trap -l：查看所有信号
 info signal：查看信号相关信息
 ```
-
+#### 发送
+```
+kill SID PID
+1 pid>0：将信号发送给进程ID为pid的进程
+2 pid==0：将信号发送给与发送进程属于同一进程组的所有进程，且发送进程具有权限向这些进程发送信号
+3 pid<-1：将信号发送给进程组ID等于pid绝对值，且发送进程具有权限向这些进程发送信号
+4 pid==-1：将信号发送给发送进程具有权限向它们发送信号的所有进程，除去init和调用进程自身
+```
 #### 处理
 ```
+trap 'cmd1; cmd2...' signal-list: 收到信号后执行cmd1, cmd2等命令
 1 默认动作：trap signal-list
 2 忽略信号：trap "" signal-list
 3 执行命令：trap "commands" signal-list
-4 查看已经注册的信号处理：trap
+4 查看已经注册的信号处理：trap -p
 
 查看当前终端设置与信息：stty -a
 
