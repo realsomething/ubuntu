@@ -218,6 +218,18 @@ SHELL 　　  当前用户Shell类型
 ```
 
 ### 软件安装
+
+#### 源码安装
+
+```
+// 脚本文件，最终生成Makefile
+./configure
+// 编译为可执行文件
+make
+// 将可执行文件放到指定目录并配置环境变量
+make install  
+```
+
 #### 安装adb
 直接用android sdk自带的
 
@@ -366,10 +378,44 @@ sudo cp -rf Crack/trial.key /usr/lib/beyondcompare/
 过期之后重置
 
 ```
-rm ~/.config/bcompare/registry.dat
+ubuntu: rm ~/.config/bcompare/registry.dat
+window: C:\Users\sky\AppData\Roaming\Scooter Software\Beyond Compare
+```
+
+#### python
+
+```
+更新源：
+sudo apt-get update
+安装：
+sudo apt-get install python3.8
+
+配置：
+sudo update-alternatives --config python
+优先级：
+sudo update-alternatives --install /usr/bin/python python /usr/bin/python3.5  7
+
+卸载：
+sudo apt-get remove python3.8
+包括依赖：
+sudo apt-get remove --auto-remove python3.8
+包括配置文件：
+sudo apt-get purge python3.8
+or
+sudo apt-get purge --auto-remove python3.8
+
+卸载源码安装：
+sudo mv /usr/local/bin/python3.9 .
+sudo mv /usr/local/bin/python3.9-config .
+
+sudo unlink /etc/alternatives/python
+sudo ln -s /usr/bin/python3.5 /etc/alternatives/python
+
+sudo update-alternatives --remove  python /usr/local/bin/python3.9
 ```
 
 ### 创建快捷方式
+
 ```
 ~/.local/share/applications
 或
