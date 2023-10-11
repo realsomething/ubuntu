@@ -217,6 +217,88 @@ SHELL 　　  当前用户Shell类型
    /lib/systemd/system 目录下会创建一个XXX.service 的配置文件，里面定义了如何启动、如何关闭X86体系
 ```
 
+### Ubuntu20.04 Android环境配置
+```
+----------------------------------
+sudo apt-get install libx11-dev:i386 libreadline6-dev:i386 libgl1-mesa-dev g++-multilib
+sudo apt-get install -y git flex bison gperf build-essential libncurses5-dev:i386
+sudo apt-get install tofrodos python-markdown libxml2-utils xsltproc zlib1g-dev:i386
+sudo apt-get install dpkg-dev libsdl1.2-dev
+sudo apt-get install git-core gnupg flex bison gperf build-essential
+sudo apt-get install zip curl zlib1g-dev gcc-multilib g++-multilib
+sudo apt-get install libc6-dev-i386
+sudo apt-get install lib32ncurses5-dev x11proto-core-dev libx11-dev
+sudo apt-get install libgl1-mesa-dev libxml2-utils xsltproc unzip m4
+sudo apt-get install lib32z-dev ccache
+sudo apt-get install libssl-dev vim gitk
+
+sudo apt-get install libesd0-dev 如果执行报错就执行下面操作再执行 
+sudo vim /etc/apt/sources.list   中添加
+    deb http://us.archive.ubuntu.com/ubuntu/ xenial main universe
+ deb-src http://us.archive.ubuntu.com/ubuntu/ xenial main universe
+     
+sudo apt-get update
+sudo apt-get install libncurses5
+     
+sudo add-apt-repository ppa:linuxuprising/libpng12
+sudo apt update
+sudo apt install libpng12-0 
+
+sudo apt-get -o Dpkg::Options::="--force-overwrite" install openjdk-9-jdk
+ 
+sudo add-apt-repository ppa:openjdk-r/ppa  
+sudo apt-get update  
+sudo apt-get install openjdk-8-jdk 
+
+sudo apt-get install libswitch-perl  
+sudo apt-get install libxml-simple-perl
+sudo apt-get install libxml2-dev zlib1g-dev
+sudo cpan install XML::LibXML
+
+sudo cpan install Archive::Zip
+
+kaios ---------------------------
+curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | sudo apt-key add -
+echo "deb https://dl.yarnpkg.com/debian/ stable main" | sudo tee /etc/apt/sources.list.d/yarn.list
+
+sudo apt update
+sudo apt install yarn
+
+
+modify python version ----------------------
+cd /usr/bin/
+sudo ln -s python2.7  python
+
+sudo apt install python2.7-dev
+python2.7 安装签名问题pycrypto-2.6.1.tar.gz
+tar -xvf pycrypto-2.6.1.tar.gz
+cd pycrypto-2.6.1
+sudo python setup.py install
+
+sudo apt-get install tightvncserver xrdp 
+
+samba --------------------------------------
+sudo apt-get install samba
+sudo vim /etc/samba/smb.conf 
+添加以下 用户名 访问路径
+[hj]
+path=/mnt/w2
+public = no
+browseable = yes
+valid users = hj
+writable = yes
+
+[whq]
+path=/mnt/w1
+public = no
+browseable = yes
+valid users = whq
+writable = yes
+
+sudo touch /etc/samba/smbpasswd
+sudo smbpasswd -a userName  添加samba用户名以及配置密码
+```
+
 ### 软件安装
 
 #### 源码安装
